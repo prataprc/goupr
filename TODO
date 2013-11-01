@@ -1,0 +1,10 @@
+- All UPR request frames have vbucket-id (4byte), but couldn't find
+  information on how that is used.
+
+- UPR_OPEN response sends uuid ? If so, how to identify the uuid in the
+  response frame.
+
+- Will Request DataType be always zero ?
+
+- What is the difference between start-sequence-number and
+  high-sequence-number ?
