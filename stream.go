@@ -3,6 +3,7 @@ package goupr
 import (
     "encoding/binary"
     "log"
+    "github.com/dustin/gomemcached"
 )
 
 type Stream struct {
@@ -15,7 +16,7 @@ type Stream struct {
 }
 
 // Stream specific messages from producer will be handled here.
-func (stream *Stream) handle(req *Request) {
+func (stream *Stream) handle(req *gomemcached.MCRequest) {
     res := make(chan []interface{})
     switch req.Opcode {
     case UPR_STREAM_END:
@@ -31,7 +32,7 @@ func (stream *Stream) handle(req *Request) {
 }
 
 // Close the stream.
-func (stream *Stream) handleStreamEnd(req *Request) {
+func (stream *Stream) handleStreamEnd(req *gomemcached.MCRequest) {
     if len(req.Extras) != 4 {
         log.Printf("UPR_STREAM_END: Opaque(%v) extras(%v)", req.Extras)
     }

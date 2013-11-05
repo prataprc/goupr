@@ -1,11 +1,14 @@
-All UPR request frames have vbucket-id (4byte), but couldn't find
-information on how that is used.
+All UPR request frames have vbucket-id (4byte), but couldn't find information
+on how that is used.
 
 Will DataType field in protocol message be always zero ?
 
-What is the difference between start-sequence-number and
-high-sequence-number ?
+What is the difference between start-sequence-number and high-sequence-number ?
 
 What is a snapshot ?
 
 what is the difference between snapshot and checkpoint ?
+
+How will the application know UPR server's IP address ?
+
+During the initial run form where will application get the vuuid values ?

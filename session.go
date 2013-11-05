@@ -7,6 +7,7 @@ import (
     "net"
     "sync"
     "time"
+    "github.com/dustin/gomemcached"
 )
 
 const (
@@ -24,7 +25,7 @@ type Client struct {
                   // application side callback when the connection is closed
     onTimeout func(*Client)
                   // application side callback when the connection timeouts
-    response  chan *Response
+    response  chan *gomemcached.MCResponse
                   // if received message is a response to a client request
                   // pass them to this channel
     streams   map[uint32]*Stream
@@ -45,7 +46,7 @@ func Connect(protocol, dest string, name string) (*Client, error) {
         onClose: nil,
         onTimeout: nil,
         healthy: true,
-        response: make(chan *Response, RESPONSE_BUFFER),
+        response: make(chan *gomemcached.MCResponse, RESPONSE_BUFFER),
     }
     req := NewRequest(0, 0, OPEN_OPAQUE, 0)
     err = client.UprOpen(req, name, 0, 0)
@@ -92,7 +93,7 @@ func (client *Client) SetWriteDeadline(t time.Time) error {
 }
 
 // Instantiate a new `Stream` structure. To request a new stream, call
-// client.UprOpen().
+// client.UprStream().
 func (client *Client) NewStream(vuuid uint64,
     opaque uint32, consumer chan []interface{}) *Stream {
 
@@ -122,10 +123,10 @@ func (client *Client) Close() bool {
 // them.
 func doRecieve(client *Client) {
     for {
-        hdr := make([]byte, HDR_LEN)
+        hdr := make([]byte, gomemcached.HDR_LEN)
         // We generally call the message as request.
-        req := &Request{}
-        if err := (&req).Receive(client, hdr); err != nil {
+        req := &gomemcached.MCRequest{}
+        if err := (&req).Receive(client.conn, hdr); err != nil {
             if client.tryError(err) {
                 break
             }
@@ -141,11 +142,11 @@ func doRecieve(client *Client) {
         case UPR_OPEN:
         case UPR_FAILOVER_LOG:
         case UPR_STREAM_REQ:
-            res := &Response{
+            res := &gomemcached.MCResponse{
                 Opcode: req.Opcode,
                 Opaque: req.Opaque,
                 Cas: req.Cas,
-                Status: Status(req.VBucket),
+                Status: gomemcached.Status(req.VBucket),
                 Extras: req.Extras,
                 Key: req.Key,
                 Body: req.Body,
@@ -162,7 +163,7 @@ func doRecieve(client *Client) {
     }
 }
 
-func (client *Client) handle(req *Request) {
+func (client *Client) handle(req *gomemcached.MCRequest) {
     log.Panicln("Unknown request", req)
     // TODO: Fill this up
 }
