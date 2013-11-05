@@ -98,10 +98,10 @@ func (client *Client) NewStream(vuuid uint64,
     opaque uint32, consumer chan []interface{}) *Stream {
 
     stream := &Stream {
-        client: client,
-        vuuid: vuuid,
-        opaque: opaque,
-        consumer: consumer,
+        Client: client,
+        Vuuid: vuuid,
+        Opaque: opaque,
+        Consumer: consumer,
     }
     return stream
 }
