@@ -1,14 +1,62 @@
+Q1.
 All UPR request frames have vbucket-id (4byte), but couldn't find information
 on how that is used.
+  A. Vbuckets are statically created during system startup. Vbuckets are
+  internal concept and they are resolved using ketama hashing algorithm or
+  through some other policies.
 
+Q2.
 Will DataType field in protocol message be always zero ?
+  A. For now yes, but in future this might change.
 
+Q3.
 What is the difference between start-sequence-number and high-sequence-number ?
+  A. (Mike) After thinking about this question a little bit we might be able to
+  get rid of the high sequence number field, but for now you can just put the
+  last sequence number you received in each of those fields when requesting
+  a stream.
 
+Q4.
 What is a snapshot ?
+  A. (Mike) A snapshot is a set of mutations/deletions where the key is unique.
 
-what is the difference between snapshot and checkpoint ?
+Q5.
+What is the difference between snapshot and checkpoint ?
+  A. For 3.0 we will be converting checkpoints to snapshots, but keeping enough
+  properties of checkpoints that we will be able to still allow tap to
+  function properly. Some differences are checkpoints were fixed size and
+  didn't guarantee that they contained unique key names.
 
+Q6.
 How will the application know UPR server's IP address ?
 
+Q7.
 During the initial run form where will application get the vuuid values ?
+
+Q8.
+The UUID is a randomly generated number, and the Sequence Number is the
+Sequence that that partition last processed at the time the Version was
+created. Does "last processed" mean last persisted ?
+
+Q9.
+The server will use the Failover Log to find the first possible History
+Branch between the last time a client was receiving mutations for a
+partition and now. Need to get this clarified !
+
+Q10.
+The client connects to the server with last known vuuid and last known
+sequence number. If the vuuid is not the current one on the server, the
+server sends back a roll-back point, but the response for UPR_STREAM_REQ
+contains only the roll-back sequence number and does not send current
+vuuid.
+This question is related to Q7.
+
+Q11.
+UPR_OPEN message contains a flag bit that says, `producer` or `consumer`.
+What is the difference ?
+  A. Looks like when a consumer is issuing a UPR_OPEN to producer, it must
+  set flag, (from pyupr).
+
+Q12.
+When KV-node crashes, how will the UPR indexer client will know the crash ?
+It must be assumed when the TCP connection closes ? After that what to do ?

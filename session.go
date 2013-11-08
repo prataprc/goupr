@@ -4,6 +4,7 @@ package goupr
 
 import (
     "log"
+    "io"
     "net"
     "sync"
     "time"
@@ -19,18 +20,18 @@ type Client struct {
     conn      net.Conn // client side socket
     name      string   // name of the connection
     uuid      []byte   // connection-uuid, used while closing the connection.
-    healthy   bool
-                  // whether the connection is still valid
+    healthy   bool     // whether the connection is still valid
     onClose   func(*Client)
-                  // application side callback when the connection is closed
+                    // application side callback when the connection is closed
     onTimeout func(*Client)
-                  // application side callback when the connection timeouts
+                    // application side callback when the connection timeouts
     response  chan *gomemcached.MCResponse
-                  // if received message is a response to a client request
-                  // pass them to this channel
+                    // if received message is a response to a client request
+                    // pass them to this channel
     streams   map[uint32]*Stream
-                  // A map of `Opaque` value to Stream consumer.
-    sync.RWMutex        // lock to access `streams` field.
+                    // A map of `Opaque` value to Stream consumer.
+    opqCount  uint32 // Opaque counter.
+    sync.RWMutex     // lock to access `streams` field.
 }
 
 // Connect to producer identified by `port` and `dest`.
@@ -43,17 +44,22 @@ func Connect(protocol, dest string, name string) (*Client, error) {
     }
     client := Client{
         conn: conn,
+        healthy: true,
+        streams: make(map[uint32]*Stream),
+        opqCount: 1,
         onClose: nil,
         onTimeout: nil,
-        healthy: true,
-        response: make(chan *gomemcached.MCResponse, RESPONSE_BUFFER),
+        response: make(chan *gomemcached.MCResponse),
     }
+    go doRecieve(&client)
     req := NewRequest(0, 0, OPEN_OPAQUE, 0)
-    err = client.UprOpen(req, name, 0, 0)
-    if err == nil {
-        go doRecieve(&client)
+    // TODO: Sequence no. can be ZERO ?
+    flags := uint32(0x1)
+    if err := client.UprOpen(req, name, 0, flags); err == nil {
+        return &client, err
+    } else {
+        return nil, err
     }
-    return &client, err
 }
 
 // When `client` detects that the other end has hung up, an optional `onClose`
@@ -107,71 +113,74 @@ func (client *Client) NewStream(vuuid uint64,
 }
 
 // Hang-up
-func (client *Client) Close() bool {
+func (client *Client) Close() (ret bool) {
     if client.healthy {
         client.conn.Close()
-        client.healthy = false
-        return true
     }
     if client.onClose != nil {
         client.onClose(client)
     }
-    return false
+    close(client.response)
+    ret, client.healthy = client.healthy, false
+    return ret
 }
 
-// Go routine that will simple wait for new messages from producer and handler
-// them.
+// Go routine that will wait for new messages from producer and handle them.
 func doRecieve(client *Client) {
     for {
         hdr := make([]byte, gomemcached.HDR_LEN)
         // We generally call the message as request.
-        req := &gomemcached.MCRequest{}
-        if err := (&req).Receive(client.conn, hdr); err != nil {
+        res := &gomemcached.MCResponse{}
+        if err := (&res).Receive(client.conn, hdr); err != nil {
             if client.tryError(err) {
                 break
             }
         }
 
-        // Get the stream, if available.
-        client.RLock()
-        stream := client.streams[req.Opaque]
-        client.RUnlock()
-
-        switch req.Opcode {
-        // message is a response to one of the following client request.
-        case UPR_OPEN:
-        case UPR_FAILOVER_LOG:
-        case UPR_STREAM_REQ:
-            res := &gomemcached.MCResponse{
-                Opcode: req.Opcode,
-                Opaque: req.Opaque,
-                Cas: req.Cas,
-                Status: gomemcached.Status(req.VBucket),
-                Extras: req.Extras,
-                Key: req.Key,
-                Body: req.Body,
-            }
+        switch res.Opcode {
+        case UPR_OPEN, UPR_FAILOVER_LOG, UPR_STREAM_REQ:
             client.response <- res
-        // Otherwise let the stream or client handle it.
-        default:
-            if req.Opaque != 0 && stream != nil {
-                go stream.handle(req)
+        default: // Otherwise let the stream or client handle it.
+            stream := client.getStream(res.Opaque)
+            if res.Opaque > 0 && stream != nil {
+                go stream.handle(res)
             } else {
-                go client.handle(req)
+                go client.handle(res)
             }
         }
     }
 }
 
-func (client *Client) handle(req *gomemcached.MCRequest) {
-    log.Panicln("Unknown request", req)
+func (client *Client) handle(res *gomemcached.MCResponse) {
+    log.Panicln("Unknown response", res)
     // TODO: Fill this up
 }
 
 func (client *Client) tryError(err error) bool {
-    // TODO: Check whether the err is because the server has closed the
-    // connection.
     // TODO: Check whether the err is because of timeout.
-    client.healthy = false
+    if err == io.EOF {
+        client.Close()
+        return true
+    }
     return false
+}
+
+// Operations to stream structure.
+func (client *Client) addStream(opaque uint32, stream *Stream) {
+    client.Lock()
+    defer client.Unlock()
+    client.streams[opaque] = stream
+}
+
+func (client *Client) getStream(opaque uint32) (stream *Stream) {
+    client.RLock()
+    defer client.RUnlock()
+    stream = client.streams[opaque]
+    return stream
+}
+
+func (client *Client) evictStream(opaque uint32) {
+    client.Lock()
+    defer client.Unlock()
+    delete(client.streams, opaque)
 }

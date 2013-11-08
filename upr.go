@@ -3,13 +3,14 @@ package goupr
 import (
     "encoding/binary"
     "fmt"
+    "errors"
     "log"
     "github.com/dustin/gomemcached"
 )
 
 // %UPR_OPEN response
 func (client *Client) UprOpen(
-    req *gomemcached.MCRequest, name string, seqNo, flag uint32) error {
+    req *gomemcached.MCRequest, name string, seqNo, flags uint32) error {
 
     if len(name) > 65535 {
         log.Panicln("UprOpen: name cannot exceed 65535")
@@ -21,14 +22,12 @@ func (client *Client) UprOpen(
     binary.BigEndian.PutUint32(req.Extras[:4], seqNo)
                             // #Extras.sequenceNo
     // while consumer is opening the connection Type flag needs to be cleared.
-    binary.BigEndian.PutUint32(req.Extras[4:], flag)
-                            // #Extras.flag
+    binary.BigEndian.PutUint32(req.Extras[4:], flags)
+                            // #Extras.flags
 
     // Trasmit the request
     if err := req.Transmit(client.conn); err != nil {
-        if client.tryError(err) == false {
-            return err
-        }
+        return err
     }
     client.name = name
 
@@ -56,9 +55,7 @@ func (client *Client) UprFailOverLog(
 
     // Trasmit the request
     if err := req.Transmit(client.conn); err != nil {
-        if client.tryError(err) == false {
-            return nil, err
-        }
+        return nil, err
     }
 
     // Wait for response
@@ -96,6 +93,8 @@ func (client *Client) UprStream(req *gomemcached.MCRequest, flags uint32,
     startSeqno, endSeqno, vuuid, highSeqno uint64) (*Stream, uint64, error) {
 
     req.Opcode = UPR_STREAM_REQ     // #OpCode
+    req.Opaque = client.opqCount; client.opqCount++
+                                    // #Opaque
     req.Key = []byte{}              // #Keys
     req.Extras = make([]byte, 40)
     binary.BigEndian.PutUint32(req.Extras[:4], flags)
@@ -106,15 +105,17 @@ func (client *Client) UprStream(req *gomemcached.MCRequest, flags uint32,
     binary.BigEndian.PutUint64(req.Extras[32:40], highSeqno)
                                     // #Extras
 
-    // Transmit the request
-    if err := req.Transmit(client.conn); err != nil {
-        if client.tryError(err) == false {
-            return nil, 0, err
-        }
+    stream := client.NewStream(0, req.Opaque, make(chan []interface{}))
+    client.addStream(req.Opaque, stream)
+
+    if err := req.Transmit(client.conn); err != nil { // Transmit the request
+        return nil, 0, err
     }
 
-    // Wait for response
-    res := <-client.response
+    res := <-client.response // Wait for response
+    if res == nil {
+        return nil, 0, errors.New("closed")
+    }
     if res.Opcode != UPR_STREAM_REQ {
         err := fmt.Errorf("UprStream: unexpected #opcode", res.Opcode)
         return nil, 0, err
@@ -124,14 +125,14 @@ func (client *Client) UprStream(req *gomemcached.MCRequest, flags uint32,
         return nil, 0, err
     }
 
+    // If not success, remove the Stream reference from client connection,
+    // that was optimistically added above.
+    if res.Status != gomemcached.SUCCESS {
+        client.evictStream(req.Opaque)
+    }
     // Check whether it is rollback
     switch res.Status {
     case gomemcached.SUCCESS:
-        consumer := make(chan []interface{})
-        stream := client.NewStream(vuuid, req.Opaque, consumer)
-        client.Lock()
-        client.streams[req.Opaque] = stream
-        client.Unlock()
         return stream, 0, nil
     case ROLLBACK:
         if len(res.Extras) != 8 {

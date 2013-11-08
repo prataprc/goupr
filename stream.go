@@ -16,37 +16,30 @@ type Stream struct {
 }
 
 // Stream specific messages from producer will be handled here.
-func (stream *Stream) handle(req *gomemcached.MCRequest) {
-    res := make(chan []interface{})
-    switch req.Opcode {
+func (stream *Stream) handle(res *gomemcached.MCResponse) {
+    ch := make(chan []interface{})
+    switch res.Opcode {
     case UPR_STREAM_END:
-        close(stream.Consumer)
-        stream.handleStreamEnd(req)
-    case UPR_SNAPSHOTM:
-    case UPR_MUTATION:
-    case UPR_DELETION:
-    case UPR_EXPIRATION:
-        stream.Consumer <- []interface{}{req, res}
-        <-res
+        stream.handleStreamEnd(res)
+    case UPR_SNAPSHOTM, UPR_MUTATION, UPR_DELETION, UPR_EXPIRATION:
+        stream.Consumer <- []interface{}{res, ch}
     }
 }
 
 // Close the stream.
-func (stream *Stream) handleStreamEnd(req *gomemcached.MCRequest) {
-    if len(req.Extras) != 4 {
-        log.Printf("UPR_STREAM_END: Opaque(%v) extras(%v)", req.Extras)
+func (stream *Stream) handleStreamEnd(res *gomemcached.MCResponse) {
+    if len(res.Extras) != 4 {
+        log.Printf("UPR_STREAM_END: Opaque(%v) extras(%v)", res.Extras)
     }
-    flags := binary.BigEndian.Uint32(req.Extras)
+    flags := binary.BigEndian.Uint32(res.Extras)
     switch flags { // TODO: avoid magic number for flags.
     case 0x0:
-        log.Printf("Closing stream %v without error", stream.Vuuid)
+        log.Printf("Closing stream %v without error", stream.Opaque)
     case 0x1:
         log.Printf("Closing stream %v, remote changed state", stream.Vuuid)
     default:
         log.Panicf("Unknown flag received for stream close (%v)", stream.Vuuid)
     }
-
-    stream.Client.Lock()
-    delete(stream.Client.streams, req.Opaque)
-    stream.Client.Unlock()
+    close(stream.Consumer)
+    stream.Client.evictStream(res.Opaque)
 }
