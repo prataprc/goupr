@@ -60,3 +60,13 @@ What is the difference ?
 Q12.
 When KV-node crashes, how will the UPR indexer client will know the crash ?
 It must be assumed when the TCP connection closes ? After that what to do ?
+
+Q13.
+Mutation messsages including (deletions, expirations and flush) contain rev.
+sequence no. What is that ?
+
+Q14.
+In case of deletion, expiration messages indexer node cannot delete the entry
+without knowing the secondary key. To generate the seconday key, we also need
+the value of the document.
+  A. Use the backindex and lookup with the supplied key (docid).
