@@ -3,83 +3,75 @@
 package goupr
 
 import (
-    "log"
+    "github.com/dustin/gomemcached"
     "io"
+    "log"
     "net"
     "sync"
     "time"
-    "github.com/dustin/gomemcached"
 )
 
 const (
-    OPEN_OPAQUE uint32 = 0xDADADADA
-    RESPONSE_BUFFER int = 10
+    OPEN_OPAQUE     uint32 = 0xDADADADA
+    RESPONSE_BUFFER int    = 10
 )
 
+type Callback func(*Client)
+type ClientCallback func(*Client, *gomemcached.MCRequest)
+type StreamCallback func(*Stream, *gomemcached.MCRequest)
+
+
 type Client struct {
-    conn      net.Conn // client side socket
-    name      string   // name of the connection
-    uuid      []byte   // connection-uuid, used while closing the connection.
-    healthy   bool     // whether the connection is still valid
-    onClose   func(*Client)
-                    // application side callback when the connection is closed
-    onTimeout func(*Client)
-                    // application side callback when the connection timeouts
-    response  chan *gomemcached.MCResponse
-                    // if received message is a response to a client request
-                    // pass them to this channel
-    streams   map[uint32]*Stream
-                    // A map of `Opaque` value to Stream consumer.
-    opqCount  uint32 // Opaque counter.
-    sync.RWMutex     // lock to access `streams` field.
+    conn    net.Conn // client side socket
+    name    string   // name of the connection
+    healthy bool     // whether the connection is still valid
+
+    // application side callback when the connection is closed
+    onClose Callback
+
+    // application side callback when the connection timeouts
+    onTimeout Callback
+
+    // application side callback when connection level callbacks like
+    // UPR_ADD_STREAM, UPR_STREAM_END
+    onStream ClientCallback
+
+    // if received message is a response to a client request
+    // pass them to this channel
+    response chan *gomemcached.MCResponse
+
+    // A map of `Opaque` value to Stream consumer.
+    streams map[uint32]*Stream
+
+    sync.RWMutex        // lock to access `streams` field.
+}
+
+// Create a new consumer instance.
+func NewClient(onClose, onTimeout Callback, onStream ClientCallback) *Client {
+    client := Client{
+        healthy:   false,
+        streams:   make(map[uint32]*Stream),
+        onClose:   onClose,
+        onTimeout: onTimeout,
+        onStream:  onStream,
+        response:  make(chan *gomemcached.MCResponse),
+    }
+    return &client
 }
 
 // Connect to producer identified by `port` and `dest`.
-// - `name` the connection.
-// - launch a goroutine to recieve data for producer.
-func Connect(protocol, dest string, name string) (*Client, error) {
-    conn, err := net.Dial(protocol, dest)
-    if err != nil {
-        return nil, err
+// - `open` and `name` the connection.
+func (client *Client) Connect(protocol, dest string, name string) (err error) {
+    if client.conn, err = net.Dial(protocol, dest); err != nil {
+        return err
     }
-    client := Client{
-        conn: conn,
-        healthy: true,
-        streams: make(map[uint32]*Stream),
-        opqCount: 1,
-        onClose: nil,
-        onTimeout: nil,
-        response: make(chan *gomemcached.MCResponse),
-    }
-    go doRecieve(&client)
+    client.healthy = true
+    client.name = name
     req := NewRequest(0, 0, OPEN_OPAQUE, 0)
-    // TODO: Sequence no. can be ZERO ?
     flags := uint32(0x1)
-    if err := client.UprOpen(req, name, 0, flags); err == nil {
-        return &client, err
-    } else {
-        return nil, err
-    }
-}
-
-// When `client` detects that the other end has hung up, an optional `onClose`
-// callback can be issued.
-func (client *Client) SetOnClose(onClose func(*Client)) bool {
-    if client.healthy {
-        client.onClose = onClose
-        return true
-    }
-    return false
-}
-
-// When `client` detects that socket operation failed because of a timeout,
-// an optional `onTimeout` callback can be issued.
-func (client *Client) SetOnTimeout(onTimeout func(*Client)) bool {
-    if client.healthy {
-        client.onTimeout = onTimeout
-        return true
-    }
-    return false
+    go doRecieve(client)
+    err = client.UprOpen(req, name, 0, flags)
+    return
 }
 
 // Set timeout for socket read operation.
@@ -96,20 +88,6 @@ func (client *Client) SetWriteDeadline(t time.Time) error {
         return client.conn.SetWriteDeadline(t)
     }
     return nil
-}
-
-// Instantiate a new `Stream` structure. To request a new stream, call
-// client.UprStream().
-func (client *Client) NewStream(vuuid uint64,
-    opaque uint32, consumer chan []interface{}) *Stream {
-
-    stream := &Stream {
-        Client: client,
-        Vuuid: vuuid,
-        Opaque: opaque,
-        Consumer: consumer,
-    }
-    return stream
 }
 
 // Hang-up
@@ -140,20 +118,24 @@ func doRecieve(client *Client) {
         switch res.Opcode {
         case UPR_OPEN, UPR_FAILOVER_LOG, UPR_STREAM_REQ:
             client.response <- res
-        default: // Otherwise let the stream or client handle it.
+        case UPR_ADD_STREAM:
+            go client.onStream(client, Request(res))
+        case UPR_STREAM_END:
+            client.evictStream(res.Opaque)
+            go client.onStream(client, Request(res))
+        case UPR_CLOSE_STREAM:
+            panic("UPR_CLOSE_STREAM not yet implemented")
+        case UPR_SNAPSHOTM, UPR_MUTATION, UPR_DELETION, UPR_EXPIRATION, UPR_FLUSH:
             stream := client.getStream(res.Opaque)
             if res.Opaque > 0 && stream != nil {
-                go stream.handle(res)
+                go stream.OnCommand(stream, Request(res))
             } else {
-                go client.handle(res)
+                log.Printf("un-known message received %v", res)
             }
+        default:
+            log.Printf("un-known opcode received %v", res)
         }
     }
-}
-
-func (client *Client) handle(res *gomemcached.MCResponse) {
-    log.Panicln("Unknown response", res)
-    // TODO: Fill this up
 }
 
 func (client *Client) tryError(err error) bool {
@@ -165,7 +147,7 @@ func (client *Client) tryError(err error) bool {
     return false
 }
 
-// Operations to stream structure.
+// Operations to client structure.
 func (client *Client) addStream(opaque uint32, stream *Stream) {
     client.Lock()
     defer client.Unlock()
@@ -183,4 +165,17 @@ func (client *Client) evictStream(opaque uint32) {
     client.Lock()
     defer client.Unlock()
     delete(client.streams, opaque)
+}
+
+func Request(res *gomemcached.MCResponse) *gomemcached.MCRequest {
+    req := gomemcached.MCRequest {
+        Opcode: res.Opcode,
+        Cas: res.Cas,
+        Opaque: res.Opaque,
+        VBucket: uint16(res.Status),
+        Extras: res.Extras,
+        Key: res.Key,
+        Body: res.Body,
+    }
+    return &req
 }

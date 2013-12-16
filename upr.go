@@ -8,7 +8,7 @@ import (
     "github.com/dustin/gomemcached"
 )
 
-// %UPR_OPEN response
+// UPR_OPEN, synchronous call.
 func (client *Client) UprOpen(
     req *gomemcached.MCRequest, name string, seqNo, flags uint32) error {
 
@@ -31,20 +31,18 @@ func (client *Client) UprOpen(
     }
     client.name = name
 
-    // Wait for response
-    res := <-client.response
+    res := <-client.response // Wait for response from doRecieve()
     if res.Opcode != UPR_OPEN {
         return fmt.Errorf("UprOpen: unexpected #opcode", res.Opcode)
-    }
-    if req.Opaque != res.Opaque {
+    } else if req.Opaque != res.Opaque {
         return fmt.Errorf("UprOpen: #opaque mismatch", req.Opaque, res.Opaque)
-    }
-    if res.Status != gomemcached.SUCCESS {
+    } else if res.Status != gomemcached.SUCCESS {
         return fmt.Errorf("UprOpen: Status", res.Status)
     }
     return nil
 }
 
+// UPR_FAILOVER_LOG, synchronous call.
 func (client *Client) UprFailOverLog(
     req *gomemcached.MCRequest) ([][2]uint64, error) {
 
@@ -58,42 +56,33 @@ func (client *Client) UprFailOverLog(
         return nil, err
     }
 
-    // Wait for response
-    res := <-client.response
+    res := <-client.response // Wait for response from doRecieve()
     if res.Opcode != UPR_FAILOVER_LOG {
         err := fmt.Errorf( "UprFailOverLog: unexpected #opcode", res.Opcode)
         return nil, err
-    }
-    if req.Opaque != res.Opaque {
+    } else if req.Opaque != res.Opaque {
         err := fmt.Errorf(
             "UprFailOverLog: #opaque mismatch", req.Opaque, res.Opaque)
         return nil, err
-    }
-    if len(res.Body) % 16 != 0 {
+    } else if len(res.Body) % 16 != 0 {
         err := fmt.Errorf(
             "UprFailOverLog: Invalide body of length", len(res.Body))
         return nil, err
-    }
-    if res.Status != gomemcached.SUCCESS {
+    } else if res.Status != gomemcached.SUCCESS {
         return nil, fmt.Errorf("UprOpen: Status", res.Status)
     }
 
     // Return the log
-    log := make([][2]uint64, len(res.Body) / 16)
-    for i, j := 0, 0; i < len(res.Body); i += 16 {
-        vuuid := binary.BigEndian.Uint64(res.Body[i:i+8])
-        seqno := binary.BigEndian.Uint64(res.Body[i+8:i+16])
-        log[j] = [2]uint64{vuuid, seqno}
-        j++
-    }
-    return log, nil
+    return parseFailoverLog(res.Body), nil
 }
 
-func (client *Client) UprStream(req *gomemcached.MCRequest, flags uint32,
-    startSeqno, endSeqno, vuuid, highSeqno uint64) (*Stream, uint64, error) {
+// UPR_STREAM_REQ, synchronous call.
+func (client *Client) UprStream(
+    req *gomemcached.MCRequest, flags uint32,
+    startSeqno, endSeqno, vuuid, highSeqno uint64,
+    callback StreamCallback) (*Stream, uint64, error) {
 
     req.Opcode = UPR_STREAM_REQ     // #OpCode
-    req.Opaque = client.opqCount; client.opqCount++
                                     // #Opaque
     req.Key = []byte{}              // #Keys
     req.Extras = make([]byte, 40)
@@ -105,7 +94,7 @@ func (client *Client) UprStream(req *gomemcached.MCRequest, flags uint32,
     binary.BigEndian.PutUint64(req.Extras[32:40], highSeqno)
                                     // #Extras
 
-    stream := client.NewStream(0, req.Opaque, make(chan []interface{}))
+    stream := client.NewStream(req.VBucket, vuuid, req.Opaque, callback)
     client.addStream(req.Opaque, stream)
 
     if err := req.Transmit(client.conn); err != nil { // Transmit the request
@@ -115,12 +104,10 @@ func (client *Client) UprStream(req *gomemcached.MCRequest, flags uint32,
     res := <-client.response // Wait for response
     if res == nil {
         return nil, 0, errors.New("closed")
-    }
-    if res.Opcode != UPR_STREAM_REQ {
+    } else if res.Opcode != UPR_STREAM_REQ {
         err := fmt.Errorf("UprStream: unexpected #opcode", res.Opcode)
         return nil, 0, err
-    }
-    if req.Opaque != res.Opaque {
+    } else if req.Opaque != res.Opaque {
         err := fmt.Errorf("UprStream: #opaque mismatch", req.Opaque, res.Opaque)
         return nil, 0, err
     }
@@ -130,21 +117,23 @@ func (client *Client) UprStream(req *gomemcached.MCRequest, flags uint32,
     if res.Status != gomemcached.SUCCESS {
         client.evictStream(req.Opaque)
     }
+
     // Check whether it is rollback
+    var err error
+
     switch res.Status {
     case gomemcached.SUCCESS:
-        return stream, 0, nil
+        stream.Log = parseFailoverLog(res.Body)
+        return stream, 0, err
     case ROLLBACK:
         if len(res.Extras) != 8 {
-            log.Panicln("UprStream: Invalid rollback", res.Extras)
+            err = fmt.Errorf("UprStream: Invalid rollback", res.Extras)
         }
         rollback := binary.BigEndian.Uint64(res.Extras)
-        return nil, rollback, nil
+        return nil, rollback, err
     default:
-        err := fmt.Errorf("UprStream: Status", res.Status)
-        return nil, 0, err
+        return nil, 0, fmt.Errorf("UprStream: Status", res.Status)
     }
-
 }
 
 func NewRequest(opcode gomemcached.CommandCode, cas uint64, opaque uint32,
@@ -156,4 +145,15 @@ func NewRequest(opcode gomemcached.CommandCode, cas uint64, opaque uint32,
         Opaque: opaque,
         VBucket: vbucket,
     }
+}
+
+func parseFailoverLog(buf []byte) [][2]uint64 {
+    log := make([][2]uint64, len(buf) / 16)
+    for i, j := 0, 0; i < len(buf); i += 16 {
+        vuuid := binary.BigEndian.Uint64(buf[i:i+8])
+        seqno := binary.BigEndian.Uint64(buf[i+8:i+16])
+        log[j] = [2]uint64{vuuid, seqno}
+        j++
+    }
+    return log
 }
