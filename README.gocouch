@@ -1,0 +1,2 @@
+- Connect() returns couchbase.Client, would it make more sense to return
+  *couchbase.Client ?
