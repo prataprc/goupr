@@ -5,12 +5,12 @@ import (
     "fmt"
     "errors"
     "log"
-    "github.com/dustin/gomemcached"
+    mc "github.com/dustin/gomemcached"
 )
 
 // UPR_OPEN, synchronous call.
 func (client *Client) UprOpen(
-    req *gomemcached.MCRequest, name string, seqNo, flags uint32) error {
+    req *mc.MCRequest, name string, seqNo, flags uint32) error {
 
     if len(name) > 65535 {
         log.Panicln("UprOpen: name cannot exceed 65535")
@@ -26,7 +26,7 @@ func (client *Client) UprOpen(
                             // #Extras.flags
 
     // Trasmit the request
-    if err := req.Transmit(client.conn); err != nil {
+    if err := client.conn.Transmit(req); err != nil {
         return err
     }
     client.name = name
@@ -36,7 +36,7 @@ func (client *Client) UprOpen(
         return fmt.Errorf("UprOpen: unexpected #opcode", res.Opcode)
     } else if req.Opaque != res.Opaque {
         return fmt.Errorf("UprOpen: #opaque mismatch", req.Opaque, res.Opaque)
-    } else if res.Status != gomemcached.SUCCESS {
+    } else if res.Status != mc.SUCCESS {
         return fmt.Errorf("UprOpen: Status", res.Status)
     }
     return nil
@@ -44,7 +44,7 @@ func (client *Client) UprOpen(
 
 // UPR_FAILOVER_LOG, synchronous call.
 func (client *Client) UprFailOverLog(
-    req *gomemcached.MCRequest) ([][2]uint64, error) {
+    req *mc.MCRequest) ([][2]uint64, error) {
 
     req.Opcode = UPR_FAILOVER_LOG   // #OpCode
     req.Opaque = 0xDEADBEEF         // #Opaque
@@ -52,7 +52,7 @@ func (client *Client) UprFailOverLog(
     req.Extras = []byte{}           // #Extras
 
     // Trasmit the request
-    if err := req.Transmit(client.conn); err != nil {
+    if err := client.conn.Transmit(req); err != nil {
         return nil, err
     }
 
@@ -68,7 +68,7 @@ func (client *Client) UprFailOverLog(
         err := fmt.Errorf(
             "UprFailOverLog: Invalide body of length", len(res.Body))
         return nil, err
-    } else if res.Status != gomemcached.SUCCESS {
+    } else if res.Status != mc.SUCCESS {
         return nil, fmt.Errorf("UprOpen: Status", res.Status)
     }
 
@@ -78,7 +78,7 @@ func (client *Client) UprFailOverLog(
 
 // UPR_STREAM_REQ, synchronous call.
 func (client *Client) UprStream(
-    req *gomemcached.MCRequest, flags uint32,
+    req *mc.MCRequest, flags uint32,
     startSeqno, endSeqno, vuuid, highSeqno uint64,
     callback StreamCallback) (*Stream, uint64, error) {
 
@@ -97,7 +97,7 @@ func (client *Client) UprStream(
     stream := client.NewStream(req.VBucket, vuuid, req.Opaque, callback)
     client.addStream(req.Opaque, stream)
 
-    if err := req.Transmit(client.conn); err != nil { // Transmit the request
+    if err := client.conn.Transmit(req); err != nil { // Transmit the request
         return nil, 0, err
     }
 
@@ -114,7 +114,7 @@ func (client *Client) UprStream(
 
     // If not success, remove the Stream reference from client connection,
     // that was optimistically added above.
-    if res.Status != gomemcached.SUCCESS {
+    if res.Status != mc.SUCCESS {
         client.evictStream(req.Opaque)
     }
 
@@ -122,7 +122,7 @@ func (client *Client) UprStream(
     var err error
 
     switch res.Status {
-    case gomemcached.SUCCESS:
+    case mc.SUCCESS:
         stream.Log = parseFailoverLog(res.Body)
         return stream, 0, err
     case ROLLBACK:
@@ -136,10 +136,10 @@ func (client *Client) UprStream(
     }
 }
 
-func NewRequest(opcode gomemcached.CommandCode, cas uint64, opaque uint32,
-    vbucket uint16) *gomemcached.MCRequest {
+func NewRequest(opcode mc.CommandCode, cas uint64, opaque uint32,
+    vbucket uint16) *mc.MCRequest {
 
-    return &gomemcached.MCRequest{
+    return &mc.MCRequest{
         Opcode: opcode,
         Cas: cas,
         Opaque: opaque,

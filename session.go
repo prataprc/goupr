@@ -3,12 +3,12 @@
 package goupr
 
 import (
-    "github.com/dustin/gomemcached"
     "io"
     "log"
-    "net"
     "sync"
-    "time"
+    "github.com/couchbaselabs/go-couchbase"
+    mcd "github.com/dustin/gomemcached"
+    mc "github.com/dustin/gomemcached/client"
 )
 
 const (
@@ -17,14 +17,14 @@ const (
 )
 
 type Callback func(*Client)
-type ClientCallback func(*Client, *gomemcached.MCRequest)
-type StreamCallback func(*Stream, *gomemcached.MCRequest)
-
+type ClientCallback func(*Client, *mcd.MCRequest)
+type StreamCallback func(*Stream, *mcd.MCRequest)
 
 type Client struct {
-    conn    net.Conn // client side socket
-    name    string   // name of the connection
-    healthy bool     // whether the connection is still valid
+    bucket  *couchbase.Bucket // bucket name for this connection
+    conn    *mc.Client        // client side socket
+    name    string            // name of the connection
+    healthy bool              // whether the connection is still valid
 
     // application side callback when the connection is closed
     onClose Callback
@@ -38,7 +38,7 @@ type Client struct {
 
     // if received message is a response to a client request
     // pass them to this channel
-    response chan *gomemcached.MCResponse
+    response chan *mcd.MCResponse
 
     // A map of `Opaque` value to Stream consumer.
     streams map[uint32]*Stream
@@ -47,22 +47,25 @@ type Client struct {
 }
 
 // Create a new consumer instance.
-func NewClient(onClose, onTimeout Callback, onStream ClientCallback) *Client {
+func NewClient(bucket *couchbase.Bucket,
+    onClose, onTimeout Callback, onStream ClientCallback) *Client {
+
     client := Client{
+        bucket:    bucket,
         healthy:   false,
         streams:   make(map[uint32]*Stream),
         onClose:   onClose,
         onTimeout: onTimeout,
         onStream:  onStream,
-        response:  make(chan *gomemcached.MCResponse),
+        response:  make(chan *mcd.MCResponse),
     }
     return &client
 }
 
 // Connect to producer identified by `port` and `dest`.
 // - `open` and `name` the connection.
-func (client *Client) Connect(protocol, dest string, name string) (err error) {
-    if client.conn, err = net.Dial(protocol, dest); err != nil {
+func (client *Client) Connect(dest, name string) (err error) {
+    if client.conn, err = defaultMkConn(client.bucket, dest); err != nil {
         return err
     }
     client.healthy = true
@@ -74,20 +77,16 @@ func (client *Client) Connect(protocol, dest string, name string) (err error) {
     return
 }
 
-// Set timeout for socket read operation.
-func (client *Client) SetReadDeadline(t time.Time) error {
-    if client.healthy {
-        return client.conn.SetReadDeadline(t)
+func defaultMkConn(b *couchbase.Bucket, h string) (*mc.Client, error) {
+    if conn, err := mc.Connect("tcp", h); err != nil {
+        return nil, err
+    } else {
+        if _, err = conn.Auth(b.Name, ""); err != nil {
+            conn.Close()
+            return nil, err
+        }
+        return conn, nil
     }
-    return nil
-}
-
-// Set timeout for socket write operation.
-func (client *Client) SetWriteDeadline(t time.Time) error {
-    if client.healthy {
-        return client.conn.SetWriteDeadline(t)
-    }
-    return nil
 }
 
 // Hang-up
@@ -105,11 +104,11 @@ func (client *Client) Close() (ret bool) {
 
 // Go routine that will wait for new messages from producer and handle them.
 func doRecieve(client *Client) {
+    var err error
+    var res *mcd.MCResponse
     for {
-        hdr := make([]byte, gomemcached.HDR_LEN)
         // We generally call the message as request.
-        res := &gomemcached.MCResponse{}
-        if err := (&res).Receive(client.conn, hdr); err != nil {
+        if res, err = client.conn.Receive(); err != nil {
             if client.tryError(err) {
                 break
             }
@@ -141,7 +140,7 @@ func doRecieve(client *Client) {
 func (client *Client) tryError(err error) bool {
     // TODO: Check whether the err is because of timeout.
     if err == io.EOF {
-        client.Close()
+        //client.Close()
         return true
     }
     return false
@@ -167,8 +166,8 @@ func (client *Client) evictStream(opaque uint32) {
     delete(client.streams, opaque)
 }
 
-func Request(res *gomemcached.MCResponse) *gomemcached.MCRequest {
-    req := gomemcached.MCRequest {
+func Request(res *mcd.MCResponse) *mcd.MCRequest {
+    req := mcd.MCRequest {
         Opcode: res.Opcode,
         Cas: res.Cas,
         Opaque: res.Opaque,
