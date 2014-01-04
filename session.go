@@ -150,7 +150,7 @@ func doRecieve(client *Client) {
 			log.Printf("Opcode %v not implemented", res.Opcode)
 
 		default:
-			log.Println("ERROR: un-known opcode received %v", res)
+			log.Println("ERROR: un-known opcode received", res)
 		}
 	}
 
