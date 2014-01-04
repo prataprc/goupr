@@ -113,7 +113,6 @@ func (stream *Stream) Handlecommand(req *mcd.MCRequest) {
 func (stream *Stream) handleCommand(req *mcd.MCRequest) {
 	by_seqno := binary.BigEndian.Uint32(req.Extras[:4])
 	rev_seqno := binary.BigEndian.Uint32(req.Extras[4:8])
-	fmt.Println(by_seqno, rev_seqno)
 	stream.Client.eventch <- &StreamEvent{
 		Bucket:  stream.Client.bucket.Name,
 		Opstr:   uprop2strop[req.Opcode],

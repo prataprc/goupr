@@ -147,7 +147,7 @@ func doRecieve(client *Client) {
 			panic("UPR_CLOSE_STREAM not yet implemented")
 
 		case UPR_SNAPSHOTM, UPR_EXPIRATION, UPR_FLUSH, UPR_ADD_STREAM:
-			panic("UPR_ADD_STREAM not yet implemented")
+			log.Printf("Opcode %v not implemented", res.Opcode)
 
 		default:
 			log.Println("ERROR: un-known opcode received %v", res)
