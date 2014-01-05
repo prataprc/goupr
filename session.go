@@ -96,6 +96,7 @@ func (client *Client) IsHealthy() bool {
 
 // Hang-up
 func (client *Client) Close() (ret bool) {
+	client.autoRestart = false
 	if client.healthy {
 		client.conn.Close()
 	}
@@ -171,6 +172,7 @@ func (client *Client) tryError(err error) bool {
 		return true
 	} else if err != nil {
 		log.Println("ERROR: Unknown connection error :")
+		return true
 	}
 	return false
 }
