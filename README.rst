@@ -20,11 +20,10 @@ a common response channel (maintained per connection).
 
 Known bugs:
 
-    when application first call UprStream() to open more than one stream,
-    supplying an stream-event channel to receive mutation,
-    MUTATIONS received from previously opened stream can block on
-    application's stream-event channel and not receive response for the last
-    call to UprStream(). Leading to a deadlock.
-
+* when application first call UprStream() to open more than one stream,
+  supplying an stream-event channel to receive mutation,
+  MUTATIONS received from previously opened stream can block on
+  application's stream-event channel and not receive response for the last
+  call to UprStream(). Leading to a deadlock.
   Right now, we are avoiding this by encouraging the application to call
   UprStream in a separate go-routine.
