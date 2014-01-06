@@ -171,7 +171,7 @@ func (client *Client) tryError(err error) bool {
 		client.Close()
 		return true
 	} else if err != nil {
-		log.Println("ERROR: Unknown connection error :")
+		log.Println("Unknown connection error:", err)
 		return true
 	}
 	return false
