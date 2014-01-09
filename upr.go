@@ -1,166 +1,95 @@
+// Transport functions related UPR.
+
 package goupr
 
 import (
-	"encoding/binary"
-	"errors"
-	"fmt"
-	mc "github.com/dustin/gomemcached"
-	"log"
+    "encoding/binary"
+    "fmt"
+    mcd "github.com/dustin/gomemcached"
+    mc "github.com/dustin/gomemcached/client"
+    "log"
 )
 
-// UPR_OPEN, synchronous call.
-func (client *Client) UprOpen(
-	req *mc.MCRequest, name string, seqNo, flags uint32) error {
+const opaqueOpen = 0xBEAF0001
+const opaqueFailoverRequest = 0xBEAF0002
 
-	if len(name) > 65535 {
-		log.Panicln("UprOpen: name cannot exceed 65535")
-	}
+// UPR_OPEN transport function, synchronous call. Only after an open_connection
+// succeeds streams can be requested.
+func UprOpen(conn *mc.Client, name string, flags uint32) error {
+    if len(name) > 65535 {
+        log.Panicln("UprOpen: name cannot exceed 65535")
+    }
 
-	req.Opcode = UPR_OPEN  // #OpCode
-	req.Key = []byte(name) // #Key
-	req.Extras = make([]byte, 8)
-	binary.BigEndian.PutUint32(req.Extras[:4], seqNo)
-	// #Extras.sequenceNo
-	// while consumer is opening the connection Type flag needs to be cleared.
-	binary.BigEndian.PutUint32(req.Extras[4:], flags)
-	// #Extras.flags
+    req := &mcd.MCRequest{Opcode: UPR_OPEN, Opaque: opaqueOpen}
+    req.Key = []byte(name)  // #Key
 
-	// Trasmit the request
-	if err := client.conn.Transmit(req); err != nil {
-		return err
-	}
-	client.name = name
+    req.Extras = make([]byte, 8)
+    binary.BigEndian.PutUint32(req.Extras[:4], 0)     // #Extras.sequenceNo
+    // while consumer is opening the connection Type flag needs to be cleared.
+    binary.BigEndian.PutUint32(req.Extras[4:], flags) // #Extras.flags
 
-	res := <-client.response // Wait for response from doRecieve()
-	if res == nil {
-		return fmt.Errorf("UprOpen: closed")
-	} else if res.Opcode != UPR_OPEN {
-		return fmt.Errorf("UprOpen: unexpected #opcode", res.Opcode)
-	} else if req.Opaque != res.Opaque {
-		return fmt.Errorf("UprOpen: #opaque mismatch", req.Opaque, res.Opaque)
-	} else if res.Status != mc.SUCCESS {
-		return fmt.Errorf("UprOpen: Status", res.Status)
-	}
-	return nil
+    if err := conn.Transmit(req); err != nil { // Transmit the request
+        return err
+    }
+
+    if res, err := conn.Receive(); err != nil { // Wait for response
+        return fmt.Errorf("UprOpen: connection error, %v", err)
+    } else if res.Opcode != UPR_OPEN {
+        return fmt.Errorf("UprOpen: unexpected #opcode %v", res.Opcode)
+    } else if req.Opaque != res.Opaque {
+        return fmt.Errorf(
+            "UprOpen: #opaque mismatch, %v over %v", res.Opaque, res.Opaque)
+    } else if res.Status != mcd.SUCCESS {
+        return fmt.Errorf("UprOpen: Status %v", res.Status)
+    }
+    return nil
 }
 
-// UPR_FAILOVER_LOG, synchronous call.
-func (client *Client) UprFailOverLog(
-	req *mc.MCRequest) ([][2]uint64, error) {
-
-	req.Opcode = UPR_FAILOVER_LOG // #OpCode
-	req.Opaque = 0xDEADBEEF       // #Opaque
-	req.Key = []byte{}            // #Key
-	req.Extras = []byte{}         // #Extras
-
-	// Trasmit the request
-	if err := client.conn.Transmit(req); err != nil {
-		return nil, err
-	}
-
-	res := <-client.response // Wait for response from doRecieve()
-	if res.Opcode != UPR_FAILOVER_LOG {
-		err := fmt.Errorf("UprFailOverLog: unexpected #opcode", res.Opcode)
-		return nil, err
-	} else if req.Opaque != res.Opaque {
-		err := fmt.Errorf(
-			"UprFailOverLog: #opaque mismatch", req.Opaque, res.Opaque)
-		return nil, err
-	} else if len(res.Body)%16 != 0 {
-		err := fmt.Errorf(
-			"UprFailOverLog: Invalide body of length", len(res.Body))
-		return nil, err
-	} else if res.Status != mc.SUCCESS {
-		return nil, fmt.Errorf("UprOpen: Status", res.Status)
-	}
-
-	// Return the log
-	return parseFailoverLog(res.Body), nil
+// UPR_FAILOVER_LOG, just post the request on the connection. Since UPR
+// connection is full duplex, it is the reponsibility of the caller to detect
+// the response and get the failover-log.
+func RequestFailoverLog(conn *mc.Client, vb uint16, opaque uint32) error {
+    req := &mcd.MCRequest{Opcode: UPR_FAILOVER_LOG, VBucket: vb, Opaque: opaque}
+    req.Key = []byte{}    // #Key
+    req.Extras = []byte{} // #Extras
+    err := conn.Transmit(req) // Transmit the request
+    return err
 }
 
-// UPR_STREAM_REQ, synchronous call.
-func (client *Client) UprStream(
-	req *mc.MCRequest, flags uint32,
-	startSeqno, endSeqno, vuuid, highSeqno uint64) (*Stream, uint64, error) {
-
-	req.Opcode = UPR_STREAM_REQ // #OpCode
-	// #Opaque
-	req.Key = []byte{} // #Keys
-	req.Extras = make([]byte, 40)
-	binary.BigEndian.PutUint32(req.Extras[:4], flags)
-	binary.BigEndian.PutUint32(req.Extras[4:8], uint32(0))
-	binary.BigEndian.PutUint64(req.Extras[8:16], startSeqno)
-	binary.BigEndian.PutUint64(req.Extras[16:24], endSeqno)
-	binary.BigEndian.PutUint64(req.Extras[24:32], vuuid)
-	binary.BigEndian.PutUint64(req.Extras[32:40], highSeqno)
-	// #Extras
-
-	stream := client.NewStream(req.VBucket, vuuid, req.Opaque)
-	client.addStream(req.Opaque, stream)
-
-	if client.conn != nil {
-		if err := client.conn.Transmit(req); err != nil { // Transmit request
-			return nil, 0, err
-		}
-	} else {
-		err := fmt.Errorf("Trying to open a stream on a closed connection")
-		return nil, 0, err
-	}
-
-	res := <-client.response // Wait for response
-	if res == nil {
-		return nil, 0, errors.New("closed")
-	} else if res.Opcode != UPR_STREAM_REQ {
-		err := fmt.Errorf("UprStream: unexpected #opcode", res.Opcode)
-		return nil, 0, err
-	} else if req.Opaque != res.Opaque {
-		err := fmt.Errorf("UprStream: #opaque mismatch", req.Opaque, res.Opaque)
-		return nil, 0, err
-	}
-
-	// If not success, remove the Stream reference from client connection,
-	// that was optimistically added above.
-	if res.Status != mc.SUCCESS {
-		client.evictStream(req.Opaque)
-	}
-
-	// Check whether it is rollback
-	var err error
-
-	switch res.Status {
-	case mc.SUCCESS:
-		stream.Log = parseFailoverLog(res.Body)
-		log.Println("Stream req ", stream.Log)
-		return stream, 0, err
-	case ROLLBACK:
-		if len(res.Extras) != 8 {
-			err = fmt.Errorf("UprStream: Invalid rollback", res.Extras)
-		}
-		rollback := binary.BigEndian.Uint64(res.Extras)
-		return nil, rollback, err
-	default:
-		return nil, 0, fmt.Errorf("UprStream: Status", res.Status)
-	}
+// Parse the failover log that is received as payload in UPR_STREAM_REQ or
+// UPR_FAILOVER_LOG response.
+func parseFailoverLog(body []byte) ([][2]uint64, error) {
+    if len(body)%16 != 0 {
+        err := fmt.Errorf( "Invalid body length %v, in failover-log", len(body))
+        return nil, err
+    }
+    log := make([][2]uint64, len(body)/16)
+    for i, j := 0, 0; i < len(body); i += 16 {
+        vuuid := binary.BigEndian.Uint64(body[i : i+8])
+        seqno := binary.BigEndian.Uint64(body[i+8 : i+16])
+        log[j] = [2]uint64{vuuid, seqno}
+        j++
+    }
+    return log, nil
 }
 
-func NewRequest(opcode mc.CommandCode, cas uint64, opaque uint32,
-	vbucket uint16) *mc.MCRequest {
+// UPR_STREAM_REQ, just post the request on the connection. Since UPR
+// connection is full duplex, it is the reponsibility of the caller to detect
+// the response.
+func RequestStream(conn *mc.Client, flags uint32, opaque uint32,
+    vuuid, startSeqno, endSeqno, highSeqno uint64) (err error) {
 
-	return &mc.MCRequest{
-		Opcode:  opcode,
-		Cas:     cas,
-		Opaque:  opaque,
-		VBucket: vbucket,
-	}
-}
+    req := &mcd.MCRequest{Opcode: UPR_STREAM_REQ, Opaque: opaque}
+    req.Key = []byte{} // #Keys
 
-func parseFailoverLog(buf []byte) [][2]uint64 {
-	log := make([][2]uint64, len(buf)/16)
-	for i, j := 0, 0; i < len(buf); i += 16 {
-		vuuid := binary.BigEndian.Uint64(buf[i : i+8])
-		seqno := binary.BigEndian.Uint64(buf[i+8 : i+16])
-		log[j] = [2]uint64{vuuid, seqno}
-		j++
-	}
-	return log
+    req.Extras = make([]byte, 40) // #Extras
+    binary.BigEndian.PutUint32(req.Extras[:4], flags)
+    binary.BigEndian.PutUint32(req.Extras[4:8], uint32(0))
+    binary.BigEndian.PutUint64(req.Extras[8:16], startSeqno)
+    binary.BigEndian.PutUint64(req.Extras[16:24], endSeqno)
+    binary.BigEndian.PutUint64(req.Extras[24:32], vuuid)
+    binary.BigEndian.PutUint64(req.Extras[32:40], highSeqno)
+
+    err = conn.Transmit(req)
+    return
 }
