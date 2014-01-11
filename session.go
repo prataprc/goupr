@@ -9,6 +9,7 @@ import (
 	mcd "github.com/dustin/gomemcached"
 	mc "github.com/dustin/gomemcached/client"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -60,6 +61,7 @@ type UprFeed struct {
 	conns   []*UprConnection          // per node memcached connections
 	vbmap   map[uint16]*UprConnection // vbucket-number->connection mapping
 	streams map[uint16]*UprStream     // vbucket-number->stream mapping
+	mu      sync.Mutex
 	// `quit` channel is used to signal that a Close() is called on UprFeed
 	quit chan bool
 	// channels that receives memcached messages
@@ -85,7 +87,7 @@ func StartUprFeed(b *couchbase.Bucket, name string) (*UprFeed, error) {
 	return feed, err
 }
 
-func (feed *UprFeed) FailoverLog(vb uint16) ([][2]uint64, error) {
+func (feed *UprFeed) FailoverLog(vb uint16) (FailoverLog, error) {
 	uprconn := feed.vbmap[vb]
 	drainChan(uprconn.flogch)
 	if err := RequestFailoverLog(uprconn.conn, vb, uint32(vb)); err != nil {
@@ -106,7 +108,7 @@ func (feed *UprFeed) FailoverLog(vb uint16) ([][2]uint64, error) {
 // IMPORTANT: this function must execute in a go-routine different from
 // the go-routine that waits on feed.C channel for UprEvent.
 func (feed *UprFeed) StartStream(vbucket uint16,
-	vuuid, startSeqno, endSeqno, highSeqno uint64) (uint64, [][2]uint64, error) {
+	vuuid, startSeqno, endSeqno, highSeqno uint64) (uint64, FailoverLog, error) {
 
 	var err error
 
@@ -130,7 +132,7 @@ func (feed *UprFeed) StartStream(vbucket uint16,
 		err = fmt.Errorf("Unexpected stream request for vbucket %v", vbucket)
 		return 0, nil, err
 	}
-	feed.streams[vbucket] = &UprStream{
+	stream := &UprStream{
 		vbucket:  vbucket,
 		vuuid:    vuuid,
 		opaque:   opaque,
@@ -142,6 +144,9 @@ func (feed *UprFeed) StartStream(vbucket uint16,
 	if err != nil {
 		return 0, nil, err
 	}
+	feed.mu.Lock()
+	feed.streams[vbucket] = stream
+	feed.mu.Unlock()
 	return 0, flogs, nil
 }
 
@@ -222,7 +227,9 @@ func (feed *UprFeed) handleUprMessage(req *mcd.MCRequest) {
 	case UPR_STREAM_END:
 		res := req2res(req)
 		vb := uint16(res.Opaque)
+		feed.mu.Lock()
 		delete(feed.streams, vb)
+		feed.mu.Unlock()
 		delete(feed.vbmap, vb)
 	case UPR_MUTATION, UPR_DELETION:
 		feed.C <- feed.makeUprEvent(req)

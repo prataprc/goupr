@@ -13,6 +13,8 @@ import (
 const opaqueOpen = 0xBEAF0001
 const opaqueFailoverRequest = 0xBEAF0002
 
+type FailoverLog [][2]uint64
+
 // UPR_OPEN transport function, synchronous call. Only after an open_connection
 // succeeds streams can be requested.
 func UprOpen(conn *mc.Client, name string, flags uint32) error {
@@ -58,12 +60,12 @@ func RequestFailoverLog(conn *mc.Client, vb uint16, opaque uint32) error {
 
 // Parse the failover log that is received as payload in UPR_STREAM_REQ or
 // UPR_FAILOVER_LOG response.
-func parseFailoverLog(body []byte) ([][2]uint64, error) {
+func parseFailoverLog(body []byte) (FailoverLog, error) {
 	if len(body)%16 != 0 {
 		err := fmt.Errorf("Invalid body length %v, in failover-log", len(body))
 		return nil, err
 	}
-	log := make([][2]uint64, len(body)/16)
+	log := make(FailoverLog, len(body)/16)
 	for i, j := 0, 0; i < len(body); i += 16 {
 		vuuid := binary.BigEndian.Uint64(body[i : i+8])
 		seqno := binary.BigEndian.Uint64(body[i+8 : i+16])
