@@ -96,7 +96,8 @@ func (feed *UprFeed) FailoverLog(vb uint16) (FailoverLog, error) {
 		return nil, err
 	}
 	res := <-uprconn.flogch // Block until failover logs received from server
-	if flogs, err := parseFailoverLog(res.Body); err != nil {
+	flogs, err := parseFailoverLog(res.Body)
+	if err != nil {
 		return nil, err
 	}
 	return flogs, nil
