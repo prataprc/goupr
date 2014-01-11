@@ -13,9 +13,11 @@ import (
 const opaqueOpen = 0xBEAF0001
 const opaqueFailoverRequest = 0xBEAF0002
 
+// FailoverLog is a slice of 2 element array, containing a list of [vuuid,
+// sequence-no]
 type FailoverLog [][2]uint64
 
-// UPR_OPEN transport function, synchronous call. Only after an open_connection
+// UprOpen transport function, synchronous call. Only after an open_connection
 // succeeds streams can be requested.
 func UprOpen(conn *mc.Client, name string, flags uint32) error {
 	if len(name) > 65535 {
@@ -35,21 +37,20 @@ func UprOpen(conn *mc.Client, name string, flags uint32) error {
 	}
 
 	if res, err := conn.Receive(); err != nil { // Wait for response
-		return fmt.Errorf("UprOpen: connection error, %v", err)
+		return fmt.Errorf("connection error, %v", err)
 	} else if res.Opcode != UPR_OPEN {
-		return fmt.Errorf("UprOpen: unexpected #opcode %v", res.Opcode)
+		return fmt.Errorf("unexpected #opcode %v", res.Opcode)
 	} else if req.Opaque != res.Opaque {
-		return fmt.Errorf(
-			"UprOpen: #opaque mismatch, %v over %v", res.Opaque, res.Opaque)
+		return fmt.Errorf("opaque mismatch, %v over %v", res.Opaque, res.Opaque)
 	} else if res.Status != mcd.SUCCESS {
-		return fmt.Errorf("UprOpen: Status %v", res.Status)
+		return fmt.Errorf("status %v", res.Status)
 	}
 	return nil
 }
 
-// UPR_FAILOVER_LOG, just post the request on the connection. Since UPR
-// connection is full duplex, it is the reponsibility of the caller to detect
-// the response and get the failover-log.
+// RequestFailoverLog post a request on the connection requesting failover log
+// for specified vbucket. Since UPR connection is full duplex, it is the
+// reponsibility of the caller to detect the response and get the failover-log.
 func RequestFailoverLog(conn *mc.Client, vb uint16, opaque uint32) error {
 	req := &mcd.MCRequest{Opcode: UPR_FAILOVER_LOG, VBucket: vb, Opaque: 0x10}
 	req.Key = []byte{}        // #Key
@@ -62,7 +63,7 @@ func RequestFailoverLog(conn *mc.Client, vb uint16, opaque uint32) error {
 // UPR_FAILOVER_LOG response.
 func parseFailoverLog(body []byte) (FailoverLog, error) {
 	if len(body)%16 != 0 {
-		err := fmt.Errorf("Invalid body length %v, in failover-log", len(body))
+		err := fmt.Errorf("invalid body length %v, in failover-log", len(body))
 		return nil, err
 	}
 	log := make(FailoverLog, len(body)/16)
@@ -75,7 +76,8 @@ func parseFailoverLog(body []byte) (FailoverLog, error) {
 	return log, nil
 }
 
-// UPR_STREAM_REQ, just post the request on the connection. Since UPR
+// RequestStream post a request on the connection, request the producer to
+// open a new stream for specified vbucket and its arguments. Since UPR
 // connection is full duplex, it is the reponsibility of the caller to detect
 // the response.
 func RequestStream(conn *mc.Client, flags uint32, opq uint32, vb uint16,

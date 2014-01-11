@@ -14,20 +14,20 @@ import (
 )
 
 // exponential backoff while connection retry.
-const kInitialRetryInterval = 1 * time.Second
-const kMaximumRetryInterval = 30 * time.Second
+const initialRetryInterval = 1 * time.Second
+const maximumRetryInterval = 30 * time.Second
 
-// contains an active memcached connection.
-type UprConnection struct {
+// uprConnection contains an active memcached connection.
+type uprConnection struct {
 	host   string // host to which `mc` is connected.
 	conn   *mc.Client
 	flogch chan *mcd.MCResponse // internal channel to receive failover log
 	sreqch chan *mcd.MCResponse // internal channel to receive stream req
 }
 
-// Multiple streams (actually one stream per vbucket) can be opened on a
+// uprStream maintain stream information per vbucket that opened on a
 // connection.
-type UprStream struct {
+type uprStream struct {
 	vbucket  uint16 // vbucket id
 	vuuid    uint64 // vbucket uuid
 	opaque   uint32 // messages from producer to this stream have same value
@@ -51,16 +51,16 @@ type UprEvent struct {
 	Value   []byte
 }
 
-// per bucket structure managing all UPR streams.
+// UprFeed is per bucket structure managing all UPR streams.
 type UprFeed struct {
 	// Exported channel where an aggreegate of all UprEvent are sent to app.
 	C chan UprEvent
 
 	bucket  *couchbase.Bucket         // upr client for bucket
 	name    string                    // name of the connection used in UPR_OPEN
-	conns   []*UprConnection          // per node memcached connections
-	vbmap   map[uint16]*UprConnection // vbucket-number->connection mapping
-	streams map[uint16]*UprStream     // vbucket-number->stream mapping
+	conns   []*uprConnection          // per node memcached connections
+	vbmap   map[uint16]*uprConnection // vbucket-number->connection mapping
+	streams map[uint16]*uprStream     // vbucket-number->stream mapping
 	mu      sync.Mutex
 	// `quit` channel is used to signal that a Close() is called on UprFeed
 	quit chan bool
@@ -68,14 +68,14 @@ type UprFeed struct {
 	msgch chan []interface{}
 }
 
-// this is the first call to be made the by application to start UPR
+// StartUprFeed is the first call to be made the by application to start UPR
 // connection.
 func StartUprFeed(b *couchbase.Bucket, name string) (*UprFeed, error) {
 	feed := &UprFeed{
 		C:       make(chan UprEvent, 16),
 		bucket:  b,
 		name:    name,
-		streams: make(map[uint16]*UprStream),
+		streams: make(map[uint16]*uprStream),
 		quit:    make(chan bool),
 		msgch:   make(chan []interface{}, 16),
 	}
@@ -87,6 +87,8 @@ func StartUprFeed(b *couchbase.Bucket, name string) (*UprFeed, error) {
 	return feed, err
 }
 
+// FailoverLog returns list of vuuid and sequence number for specified
+// vbucket.
 func (feed *UprFeed) FailoverLog(vb uint16) (FailoverLog, error) {
 	uprconn := feed.vbmap[vb]
 	drainChan(uprconn.flogch)
@@ -96,14 +98,14 @@ func (feed *UprFeed) FailoverLog(vb uint16) (FailoverLog, error) {
 	res := <-uprconn.flogch // Block until failover logs received from server
 	if flogs, err := parseFailoverLog(res.Body); err != nil {
 		return nil, err
-	} else {
-		return flogs, nil
 	}
+	return flogs, nil
 }
 
-// subsequently application must call StartStream() to start individual streams
-// over the connection. If successful returns the opaque number or rollback
-// sequence, else return error.
+// StartStream must be called by application after StartUprFeed(). A call to
+// this function opens a streams for every vbucket
+// If successful returns the opaque number or rollback sequence, else return
+// error.
 //
 // IMPORTANT: this function must execute in a go-routine different from
 // the go-routine that waits on feed.C channel for UprEvent.
@@ -123,16 +125,16 @@ func (feed *UprFeed) StartStream(vbucket uint16,
 	res := <-uprconn.sreqch // Block until stream-request acknowleged from server
 	switch {
 	case res.Status == ROLLBACK && len(res.Extras) != 8:
-		err = fmt.Errorf("UprStream: Invalid rollback %v\n", res.Extras)
+		err = fmt.Errorf("invalid rollback %v\n", res.Extras)
 		return 0, nil, err
 	case res.Status == ROLLBACK:
 		rollback := binary.BigEndian.Uint64(res.Extras)
 		return rollback, nil, nil
 	case res.Opaque != opaque:
-		err = fmt.Errorf("Unexpected stream request for vbucket %v", vbucket)
+		err = fmt.Errorf("unexpected stream request for vbucket %v", vbucket)
 		return 0, nil, err
 	}
-	stream := &UprStream{
+	stream := &uprStream{
 		vbucket:  vbucket,
 		vuuid:    vuuid,
 		opaque:   opaque,
@@ -156,7 +158,7 @@ func (feed *UprFeed) StartStream(vbucket uint16,
 // reconnecting until `feed` is closed.
 func (feed *UprFeed) run(name string, killSwitch chan bool) {
 	var err error
-	retryInterval := kInitialRetryInterval
+	retryInterval := initialRetryInterval
 	bucketOK := true
 	for {
 		// Connect to the UPR feed of each server node
@@ -171,7 +173,7 @@ func (feed *UprFeed) run(name string, killSwitch chan bool) {
 					return
 				}
 				feed.closeNodes()
-				retryInterval = kInitialRetryInterval
+				retryInterval = initialRetryInterval
 			}
 		}
 
@@ -186,8 +188,8 @@ func (feed *UprFeed) run(name string, killSwitch chan bool) {
 		case <-feed.quit:
 			return
 		}
-		if retryInterval *= 2; retryInterval > kMaximumRetryInterval {
-			retryInterval = kMaximumRetryInterval
+		if retryInterval *= 2; retryInterval > maximumRetryInterval {
+			retryInterval = maximumRetryInterval
 		}
 		if bucketOK {
 			err = feed.connectToNodes(name)
@@ -200,7 +202,7 @@ loop:
 	for {
 		select {
 		case mcevent := <-feed.msgch:
-			uprconn := mcevent[0].(*UprConnection)
+			uprconn := mcevent[0].(*uprConnection)
 			if _, ok := mcevent[1].(error); ok {
 				log.Printf("Received error: %v", uprconn.host)
 				killSwitch <- true
@@ -242,12 +244,12 @@ func (feed *UprFeed) handleUprMessage(req *mcd.MCRequest) {
 }
 
 func (feed *UprFeed) makeUprEvent(req *mcd.MCRequest) UprEvent {
-	by_seqno := binary.BigEndian.Uint64(req.Extras[:8])
+	bySeqno := binary.BigEndian.Uint64(req.Extras[:8])
 	e := UprEvent{
 		Bucket:  feed.bucket.Name,
 		Opstr:   eventTypes[req.Opcode],
 		Vbucket: req.VBucket,
-		Seqno:   by_seqno,
+		Seqno:   bySeqno,
 		Key:     req.Key,
 		Value:   req.Body,
 	}
@@ -256,8 +258,8 @@ func (feed *UprFeed) makeUprEvent(req *mcd.MCRequest) UprEvent {
 
 func (feed *UprFeed) connectToNodes(name string) (err error) {
 	b := feed.bucket
-	feed.conns = make([]*UprConnection, 0)
-	feed.vbmap = make(map[uint16]*UprConnection)
+	feed.conns = make([]*uprConnection, 0)
+	feed.vbmap = make(map[uint16]*uprConnection)
 	servers, vbmaps := b.VBSMJson.ServerList, b.VBSMJson.VBucketMap
 
 loop:
@@ -283,7 +285,7 @@ loop:
 			break loop
 		}
 
-		uprconn := &UprConnection{
+		uprconn := &uprConnection{
 			host:   cp.Host(),
 			conn:   conn,
 			flogch: make(chan *mcd.MCResponse),
@@ -291,7 +293,7 @@ loop:
 		}
 		feed.conns = append(feed.conns, uprconn)
 		// Collect vbuckets under this connection
-		for vbno, _ := range vbmaps {
+		for vbno := range vbmaps {
 			host := servers[vbmaps[int(vbno)][0]]
 			if uprconn.host == host {
 				feed.vbmap[uint16(vbno)] = uprconn
@@ -308,7 +310,7 @@ loop:
 	return
 }
 
-func (feed *UprFeed) doRecieve(uprconn *UprConnection, ch chan<- []interface{}) {
+func (feed *UprFeed) doRecieve(uprconn *uprConnection, ch chan<- []interface{}) {
 	var hdr [mcd.HDR_LEN]byte
 	var msg []interface{}
 	var err error
@@ -333,6 +335,7 @@ loop:
 	}
 }
 
+// Close UprFeed. Does the opposite of StartUprFeed()
 func (feed *UprFeed) Close() {
 	select {
 	case <-feed.quit:

@@ -1,12 +1,11 @@
-// Memcached binary protocol packet formats and constants.
 package goupr
 
 import (
 	"github.com/dustin/gomemcached"
 )
 
+// Opcodes for UPR
 const (
-	// Opcodes for UPR
 	UPR_OPEN         = gomemcached.CommandCode(0x50)
 	UPR_ADD_STREAM   = gomemcached.CommandCode(0x51)
 	UPR_CLOSE_STREAM = gomemcached.CommandCode(0x52)
@@ -20,8 +19,8 @@ const (
 	UPR_FLUSH        = gomemcached.CommandCode(0x5a)
 )
 
+// UPR Status
 const (
-	// UPR Status
 	ROLLBACK = gomemcached.Status(0x23)
 )
 

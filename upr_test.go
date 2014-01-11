@@ -86,7 +86,7 @@ func TestUprRequestStream(t *testing.T) {
 	if res, err := getResponse(conn); err != nil {
 		t.Fatal(err)
 	} else if res.Status != mcd.SUCCESS {
-		t.Fatal(fmt.Errorf("Request stream returned with %v status", res.Status))
+		t.Fatal(fmt.Errorf("request stream returned with %v status", res.Status))
 	}
 }
 
