@@ -1,0 +1,101 @@
+package main
+
+import (
+    "fmt"
+    "log"
+    "github.com/couchbaselabs/go-couchbase"
+    "github.com/prataprc/goupr"
+    "time"
+)
+
+var vbcount = 8
+const TESTURL = "http://localhost:9000"
+
+// Flush the bucket before trying this program
+func main() {
+    // get a bucket and mc.Client connection
+    bucket, err := getTestConnection("default")
+    if err != nil {
+        panic(err)
+    }
+    cp := bucket.GetConnPools()[0]
+    conn, err := cp.Get()
+    if err != nil {
+        panic(err)
+    }
+    defer cp.Return(conn)
+
+    // start upr feed
+    name := fmt.Sprintf("%v", time.Now().UnixNano())
+    feed, err := goupr.StartUprFeed(bucket, name, nil)
+    if err != nil {
+        panic(err)
+    }
+
+    // add mutations to the bucket.
+    var vbseqNo = make([]uint64, vbcount)
+    var mutationCount = 100
+    var mutations = 0
+    addKVset(bucket, mutationCount)
+
+    // observe the mutations from the channel.
+    var e goupr.UprEvent
+loop:
+    for {
+        select {
+        case e = <-feed.C:
+        case <-time.After(time.Second):
+            break loop
+        }
+        if vbseqNo[e.Vbucket] == 0 {
+            vbseqNo[e.Vbucket] = e.Seqno
+        } else if vbseqNo[e.Vbucket]+1 == e.Seqno {
+            vbseqNo[e.Vbucket] = e.Seqno
+        } else {
+            log.Printf(
+                "sequence number for vbucket %v, is %v, expected %v\n",
+                e.Vbucket, e.Seqno, vbseqNo[e.Vbucket]+1)
+        }
+        mutations += 1
+    }
+    feed.Close()
+
+    count := 0
+    for _, seqNo := range vbseqNo {
+        count += int(seqNo)
+    }
+    log.Println("vb sequence:", vbseqNo)
+    if count == mutationCount {
+        log.Printf(
+            "Created %v mutations and observed %v mutations",
+            mutationCount, count)
+    } else {
+        panic(fmt.Errorf("Expected %v mutations got %v", mutationCount, count))
+    }
+}
+
+func getTestConnection(bucketname string) (*couchbase.Bucket, error) {
+    couch, err := couchbase.Connect(TESTURL)
+    if err != nil {
+        log.Println("Make sure that couchbase is at", TESTURL)
+        return nil, err
+    }
+    pool, err := couch.GetPool("default")
+    if err != nil {
+        return nil, err
+    }
+    bucket, err := pool.GetBucket(bucketname)
+    return bucket, err
+}
+
+func addKVset(b *couchbase.Bucket, count int) {
+    for i := 0; i < count; i++ {
+        key := fmt.Sprintf("key%v", i)
+        value := fmt.Sprintf("Hello world%v", i)
+        err := b.Set(key, 0, value)
+        if err != nil {
+            panic(err)
+        }
+    }
+}
+
