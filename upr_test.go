@@ -1,113 +1,140 @@
 package goupr
 
 import (
-	"fmt"
-	"github.com/couchbaselabs/go-couchbase"
-	mcd "github.com/dustin/gomemcached"
-	mc "github.com/dustin/gomemcached/client"
-	"testing"
-	"time"
+    "fmt"
+    //"github.com/couchbaselabs/go-couchbase"
+    mcd "github.com/dustin/gomemcached"
+    //mc "github.com/dustin/gomemcached/client"
+    "testing"
+    //"time"
+    "encoding/binary"
 )
 
 const TESTURL = "http://localhost:9000"
 
+type testConn struct {
+    req      *mcd.MCRequest
+    transmit func (*mcd.MCRequest) error
+    receive  func () (*mcd.MCResponse, error)
+}
+
+func (conn *testConn) Transmit(req *mcd.MCRequest) error {
+    conn.req = req
+    return conn.transmit(req)
+}
+
+func (conn *testConn) Receive() (*mcd.MCResponse, error) {
+    return conn.receive()
+}
+
+func TestParseFailoverLog(t *testing.T) {
+    flogsIn := [][2]uint64{
+        {0x1234567812345671, 10},
+        {0x1234567812345672, 20},
+    }
+    buf, offset := make([]byte, 32), 0
+    for _, x := range flogsIn {
+        binary.BigEndian.PutUint64(buf[offset:], x[0])
+        binary.BigEndian.PutUint64(buf[offset+8:], x[1])
+        offset += 16
+    }
+    if flogsOut, err := parseFailoverLog(buf); err != nil {
+        t.Fatal(err)
+    } else if
+        flogsOut[0][0] != flogsIn[0][0] || flogsOut[0][1] != flogsIn[0][1] ||
+        flogsOut[1][0] != flogsIn[1][0] || flogsOut[1][1] != flogsIn[1][1] {
+        e := fmt.Errorf("Mismatch in flogs %v, expected %v", flogsOut, flogsIn)
+        t.Fatal(e)
+    }
+}
+
 func TestUprOpen(t *testing.T) {
-	bucket, err := getTestConnection("default")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cp := bucket.GetConnPools()[0]
-	conn, err := cp.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cp.Return(conn)
-	name := fmt.Sprintf("%v", time.Now().UnixNano())
-	err = UprOpen(conn, name, uint32(0x1) /*flags*/)
-	if err != nil {
-		t.Fatal(err)
-	}
+    name := "upr-open"
+    conn := &testConn{}
+    conn.transmit = func(req *mcd.MCRequest) error {
+        if string(req.Key) != name {
+            t.Fatal("name mistmatch")
+        } else if req.Opcode != UPR_OPEN {
+            t.Fatal("opcode is not UPR_OPEN")
+        }
+        return nil
+    }
+    conn.receive = func() (*mcd.MCResponse, error) {
+        res := req2res(conn.req)
+        res.Status = mcd.SUCCESS
+        return res, nil
+    }
+    uprOpen(conn, name, 0x1 /*flags*/)
 }
 
-func TestUprRequestFailoverLog(t *testing.T) {
-	bucket, err := getTestConnection("default")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cp := bucket.GetConnPools()[0]
-	conn, err := cp.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cp.Return(conn)
+func TestRequestFailoverLog(t *testing.T) {
+    flogsIn := [][2]uint64{
+        {0x1234567812345671, 10},
+        {0x1234567812345672, 20},
+    }
+    buf, offset := make([]byte, 32), 0
+    for _, x := range flogsIn {
+        binary.BigEndian.PutUint64(buf[offset:], x[0])
+        binary.BigEndian.PutUint64(buf[offset+8:], x[1])
+        offset += 16
+    }
 
-	err = UprOpen(conn, "upr-unitest", uint32(0x1) /*flags*/)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err = RequestFailoverLog(conn, 0, 0x10); err != nil {
-		t.Fatal(err)
-	}
-
-	if res, err := getResponse(conn); err != nil {
-		t.Fatal(err)
-	} else if flogs, err := parseFailoverLog(res.Body); err != nil {
-		t.Fatal(err)
-	} else {
-		fmt.Println(flogs)
-	}
+    conn := &testConn{}
+    vbucket := uint16(0x15)
+    conn.transmit = func(req *mcd.MCRequest) error {
+        if req.Opcode != UPR_FAILOVER_LOG {
+            t.Fatal("opcode is not UPR_OPEN")
+        } else if req.VBucket != vbucket {
+            t.Fatal("mismatch in requested vbucket")
+        } else if req.VBucket != uint16(req.Opaque) {
+            t.Fatal("vbucket and opaque are expected to be same")
+        }
+        return nil
+    }
+    conn.receive = func() (*mcd.MCResponse, error) {
+        res := req2res(conn.req)
+        res.Body = buf
+        res.Status = mcd.SUCCESS
+        return res, nil
+    }
+    if flogsOut, err := requestFailoverLog(conn, vbucket); err != nil {
+        t.Fatal(err)
+    } else if
+        flogsOut[0][0] != flogsIn[0][0] || flogsOut[0][1] != flogsIn[0][1] ||
+        flogsOut[1][0] != flogsIn[1][0] || flogsOut[1][1] != flogsIn[1][1] {
+        e := fmt.Errorf("Mismatch in flogs %v, expected %v", flogsOut, flogsIn)
+        t.Fatal(e)
+    }
 }
 
-func TestUprRequestStream(t *testing.T) {
-	bucket, err := getTestConnection("default")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cp := bucket.GetConnPools()[0]
-	conn, err := cp.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cp.Return(conn)
-
-	err = UprOpen(conn, "upr-unitest", uint32(0x1) /*flags*/)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = RequestStream(conn, uint32(0) /*flags*/, 0x10, uint16(0), /*vbucket*/
-		0 /*vuuid*/, 0 /*startSeqno*/, 0xFFFFFFFFFFFFFFFF, /*endSeqno*/
-		0 /*highSeqno*/)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if res, err := getResponse(conn); err != nil {
-		t.Fatal(err)
-	} else if res.Status != mcd.SUCCESS {
-		t.Fatal(fmt.Errorf("request stream returned with %v status", res.Status))
-	}
-}
-
-func getTestConnection(bucketname string) (*couchbase.Bucket, error) {
-	couch, err := couchbase.Connect(TESTURL)
-	if err != nil {
-		fmt.Println("Make sure that couchbase is at", TESTURL)
-		return nil, err
-	}
-	pool, err := couch.GetPool("default")
-	if err != nil {
-		return nil, err
-	}
-	bucket, err := pool.GetBucket(bucketname)
-	return bucket, err
-}
-
-func getResponse(conn *mc.Client) (mcd.MCResponse, error) {
-	var hdr [mcd.HDR_LEN]byte
-	var pkt mcd.MCResponse
-	mcconn := conn.GetMC()
-	err := pkt.Receive(mcconn, hdr[:])
-	return pkt, err
+func TestRequestStream(t *testing.T) {
+    conn := &testConn{}
+    vbucket, vuuid := uint16(0x15), uint64(0)
+    flags := uint32(0)
+    s, e, h := uint64(0), uint64(0xFFFFFFFFFFFFFFFF), uint64(0)
+    conn.transmit = func(req *mcd.MCRequest) error {
+        if req.Opcode != UPR_STREAM_REQ {
+            t.Fatal("opcode is not UPR_STREAM_REQ")
+        } else if req.VBucket != vbucket {
+            t.Fatal("mismatch in requested vbucket")
+        } else if req.VBucket != uint16(req.Opaque) {
+            t.Fatal("vbucket and opaque are expected to be same")
+        } else if len(req.Extras) != 40 {
+            t.Fatal("extras need to be 40 bytes long")
+        } else if binary.BigEndian.Uint32(req.Extras) != flags {
+            t.Fatal("mismatch in flags")
+        } else if binary.BigEndian.Uint32(req.Extras[4:]) != 0 {
+            t.Fatal("mismatch in reserved")
+        } else if binary.BigEndian.Uint64(req.Extras[8:]) != s {
+            t.Fatal("mismatch in start sequence")
+        } else if binary.BigEndian.Uint64(req.Extras[16:]) != e {
+            t.Fatal("mismatch in end sequence")
+        } else if binary.BigEndian.Uint64(req.Extras[24:]) != vuuid {
+            t.Fatal("mismatch in vb-uuid")
+        } else if binary.BigEndian.Uint64(req.Extras[32:]) != h {
+            t.Fatal("mismatch in high sequence")
+        }
+        return nil
+    }
+    requestStream(conn, flags, uint32(vbucket), vbucket, vuuid, s, e, h)
 }
