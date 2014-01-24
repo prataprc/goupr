@@ -70,3 +70,7 @@ In case of deletion, expiration messages indexer node cannot delete the entry
 without knowing the secondary key. To generate the seconday key, we also need
 the value of the document.
   A. Use the backindex and lookup with the supplied key (docid).
+
+When ever bucket's vbmap changes it will affect the `conns`, `vbmap` fields
+of the UprFeed structure. Figureout a way to accomplish this. we might also
+need a mutex to handle this situation.
