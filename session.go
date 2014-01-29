@@ -3,9 +3,9 @@ package goupr
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/couchbaselabs/go-couchbase"
-	mcd "github.com/dustin/gomemcached"
-	mc "github.com/dustin/gomemcached/client"
+	"github.com/prataprc/go-couchbase"
+	mcd "github.com/prataprc/gomemcached"
+	mc "github.com/prataprc/gomemcached/client"
 	"log"
 	"time"
 )

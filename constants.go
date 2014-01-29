@@ -1,7 +1,7 @@
 package goupr
 
 import (
-	"github.com/dustin/gomemcached"
+	"github.com/prataprc/gomemcached"
 )
 
 // Opcodes for UPR

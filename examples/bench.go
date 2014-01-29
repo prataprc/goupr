@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/couchbaselabs/go-couchbase"
+	"github.com/prataprc/go-couchbase"
 	"github.com/prataprc/goupr"
 	"log"
 	"time"
@@ -34,7 +34,7 @@ func main() {
 	}
 
 	// add mutations to the bucket.
-	var mutationCount = int64(100)
+	var mutationCount = int64(100000)
 	go addKVset(bucket, int(mutationCount))
 
 	// observe the mutations from the channel.
@@ -42,7 +42,8 @@ func main() {
 	start := time.Now().UnixNano()
 	end := start
 	for {
-		<-feed.C
+		e := <-feed.C
+		log.Println(e.Opstr, e.Seqno, "helo world", "bucket", string(e.Key), string(e.Value))
 		mutations += 1
 		if mutationCount == mutations {
 			break

@@ -3,8 +3,7 @@ package goupr
 import (
 	"encoding/binary"
 	"fmt"
-	mcd "github.com/dustin/gomemcached"
-	//mc "github.com/dustin/gomemcached/client"
+	mcd "github.com/prataprc/gomemcached"
 	"log"
 )
 

@@ -2,7 +2,7 @@
 package goupr
 
 import (
-	"github.com/couchbaselabs/go-couchbase"
+	"github.com/prataprc/go-couchbase"
 	"log"
 )
 

@@ -1,13 +1,10 @@
 package goupr
 
 import (
-	"fmt"
-	//"github.com/couchbaselabs/go-couchbase"
-	mcd "github.com/dustin/gomemcached"
-	//mc "github.com/dustin/gomemcached/client"
-	"testing"
-	//"time"
 	"encoding/binary"
+	"fmt"
+	mcd "github.com/prataprc/gomemcached"
+	"testing"
 )
 
 const TESTURL = "http://localhost:9000"
