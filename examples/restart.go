@@ -48,7 +48,9 @@ func main() {
 
 	streams := make(map[uint16]*goupr.UprStream, 0)
 	for vb := range vbseqNo {
-		streams[uint16(vb)] = feed.GetStream(uint16(vb))
+		stream := feed.GetStream(uint16(vb))
+		streams[uint16(vb)] = stream
+		stream.Vuuid = stream.Flog[0][0]
 	}
 	feed.Close()
 

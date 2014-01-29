@@ -232,8 +232,8 @@ func startStreams(streams map[uint16]*UprStream,
 			return nil, err
 		}
 		log.Printf(
-			"Posted stream request for vbucket %v from %v\n",
-			vb, stream.Startseq)
+			"Posted stream request for vbucket %v from %v (vuuid:%v)\n",
+			vb, stream.Startseq, stream.Vuuid)
 	}
 	return streams, nil
 }
